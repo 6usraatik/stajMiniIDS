@@ -528,3 +528,5 @@
 [ALARM] ARP Spoofing Tespiti! IP: 0.0.0.0 | Kayitli MAC: E4:70:B8:63:AB:B9 | Sahte MAC: E4:70:B8:63:AB:B9
 [ALARM] ARP Spoofing Tespiti! IP: 192.168.1.22 | Kayitli MAC: E4:70:B8:63:AB:B9 | Sahte MAC: E4:70:B8:63:AB:B9
 [ALARM] ARP Spoofing Tespiti! IP: 192.168.1.26 | Kayitli MAC: D4:A3:EB:89:D9:72 | Sahte MAC: D4:A3:EB:89:D9:72
+
+--- YENI OTURUM BASLADI ---
