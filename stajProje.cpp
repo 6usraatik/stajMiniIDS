@@ -1,11 +1,10 @@
-#include <iostream>
+﻿#include <iostream>
 #include <pcap.h>
 #include <map>
 #include <set>
 #include <string>
 #include <fstream>
 #pragma comment(lib, "ws2_32.lib")
-
 
 int toplam_paket = 0;
 int tcp_sayisi = 0;
@@ -18,7 +17,6 @@ int syn_flood_sayisi = 0;
 int ping_of_death_sayisi = 0;
 int kara_liste_engeli = 0;
 
-
 struct ethernet_header { u_char hedef_mac[6]; u_char kaynak_mac[6]; u_short eth_type; };
 
 struct arp_header {
@@ -27,7 +25,7 @@ struct arp_header {
 };
 
 struct ip_header {
-    u_char ver_ihl; u_char tos; u_short tlen; // tlen: total length 
+    u_char ver_ihl; u_char tos; u_short tlen;
     u_short id; u_short flags_fo;
     u_char ttl; u_char proto; u_short crc; u_char kaynak_ip[4]; u_char hedef_ip[4];
 };
@@ -43,7 +41,6 @@ struct icmp_header {
     u_char type; u_char code; u_short checksum; u_short id; u_short seq;
 };
 
-
 std::map<std::string, std::string> ip_mac_tablosu;
 std::set<std::string> kara_liste;
 std::map<std::string, std::set<u_short>> port_tarama_takibi;
@@ -51,7 +48,7 @@ std::map<std::string, int> syn_sayaci;
 
 const int PORT_TARAMA_LIMITI = 4;
 const int SYN_FLOOD_LIMITI = 5;
-const int ICMP_MAX_GIVEN_SIZE = 1000; // 1000 bayttan b�y�k ping gelirse alarm!
+const int ICMP_MAX_GIVEN_SIZE = 1000; // 1000 bayttan büyük ping gelirse alarm
 
 std::ofstream log_dosyasi("C:\\Users\\HUAWEI\\Desktop\\ids_guvenlik_log.txt", std::ios::app);
 
@@ -63,7 +60,6 @@ std::string mac_to_string(const u_char* mac) {
     sprintf_s(buffer, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return std::string(buffer);
 }
-
 
 void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_char* pkt_data) {
     toplam_paket++;
@@ -82,15 +78,21 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
         }
         else {
             std::string bilinen_mac = ip_mac_tablosu[gonderen_ip];
+            // test için başta == sonradan !=
             if (bilinen_mac != gonderen_mac) {
                 alarm_sayisi++;
-                std::cout << "\nKRITIK ALARM: ARP SPOOFING! -> IP: " << gonderen_ip << "\n";
+                std::cout << "\n=============================================================\n";
+                std::cout << " KRITIK ALARM: ARP SPOOFING TESPITI\n";
+                std::cout << "=============================================================\n";
+                std::cout << " -> Saldirgan IP : " << gonderen_ip << "\n";
+                std::cout << " -> Aksiyon      : IP KARA LISTEYE alindi.\n";
+                std::cout << "=============================================================\n";
                 kara_liste.insert(gonderen_ip);
                 if (log_dosyasi.is_open()) log_dosyasi << "[ALARM - ARP] Sahte MAC! IP: " << gonderen_ip << " Kara Listeye Alindi.\n";
             }
         }
     }
-    // ipv4 
+    // ipv4
     else if (protokol == 0x0800) {
         const struct ip_header* ip = (struct ip_header*)(pkt_data + 14);
         int ip_baslik_uzunlugu = (ip->ver_ihl & 0x0F) * 4;
@@ -99,7 +101,6 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
         std::string s_ip = ip_to_string(ip->kaynak_ip);
         std::string h_ip = ip_to_string(ip->hedef_ip);
 
-        
         if (kara_liste.find(s_ip) != kara_liste.end()) {
             kara_liste_engeli++;
             std::cout << "[KARA LISTE ENGELLI TRAFIK] Kaynak: " << s_ip << " -> Hedef: " << h_ip << "\n";
@@ -121,7 +122,7 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
                 if (syn_sayaci[s_ip] == SYN_FLOOD_LIMITI) {
                     alarm_sayisi++; syn_flood_sayisi++;
                     std::cout << "\n=============================================================\n";
-                    std::cout << " KRITIK ALARM: SYN FLOOD (DoS/DDoS) TESPITI!\n";
+                    std::cout << " KRITIK ALARM: SYN FLOOD (DoS/DDoS) TESPITI\n";
                     std::cout << "=============================================================\n";
                     std::cout << " -> Saldirgan IP : " << s_ip << "\n";
                     std::cout << " -> Durum        : Cok kisa surede " << SYN_FLOOD_LIMITI << " adet SYN paketi firlatildi!\n";
@@ -139,32 +140,51 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             udp_sayisi++;
             const struct udp_header* udp = (struct udp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
             h_port = ntohs(udp->hedef_port);
-            std::cout << "[UDP] " << s_ip << ":" << ntohs(udp->kaynak_port) << " --> " << h_ip << ":" << h_port << "\n";
-        }
-        else if (ip->proto == 1) { // icmp
-            icmp_sayisi++;
-            const struct icmp_header* icmp = (struct icmp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
 
-            std::cout << "[ICMP/Ping] " << s_ip << " --> " << h_ip << " | Tip: " << (int)icmp->type << " | Boyut: " << toplam_ip_boyutu << " bayt\n";
+            // dns tunelling saldırısı
+            if (h_port == 53) {
+                int udp_baslik_uzunlugu = 8;
+                int veri_baslangici = 14 + ip_baslik_uzunlugu + udp_baslik_uzunlugu;
+                int veri_uzunlugu = toplam_ip_boyutu - ip_baslik_uzunlugu - udp_baslik_uzunlugu;
 
-            // ping of death
-            if (toplam_ip_boyutu > ICMP_MAX_GIVEN_SIZE) {
-                alarm_sayisi++;
-                ping_of_death_sayisi++;
-                std::cout << "\n=============================================================\n";
-                std::cout << " KRITIK ALARM: PING OF DEATH TESPITI!\n";
-                std::cout << "=============================================================\n";
-                std::cout << " -> Saldirgan IP : " << s_ip << "\n";
-                std::cout << " -> Durum        : Standart disi devasa ICMP paketi (" << toplam_ip_boyutu << " bayt) tespit edildi!\n";
-                std::cout << " -> Aksiyon      : Hizmet Reddi saldirisi durduruldu, IP KARA LISTEYE alindi.\n";
-                std::cout << "=============================================================\n";
+                if (veri_uzunlugu > 0) {
+                    const u_char* dns_verisi = pkt_data + veri_baslangici;
+                    std::string dns_string = "";
+                    int anlamsiz_karakter_serisi = 0;
 
-                kara_liste.insert(s_ip);
-                if (log_dosyasi.is_open()) log_dosyasi << "[ALARM - PING OF DEATH] " << s_ip << " anormal ping gonderdi! (" << toplam_ip_boyutu << " bayt). Kara listeye eklendi.\n";
+                    for (int j = 0; j < veri_uzunlugu; j++) {
+                        unsigned char c = (unsigned char)dns_verisi[j];
+
+                        if (std::isalnum(c) || c == '-' || c == '.') {
+                            dns_string += c;
+                            anlamsiz_karakter_serisi++;
+                        }
+                        else {
+                            anlamsiz_karakter_serisi = 0; // seriyi sıfırla
+                        }
+
+                        // 50 Karakterden uzun bitişik metin yakalanırsa alarm
+                        if (anlamsiz_karakter_serisi > 50) {
+                            alarm_sayisi++;
+                            std::cout << "\n=============================================================\n";
+                            std::cout << " KRITIK ALARM: DNS TUNELLEME (VERI SIZDIRMA) TESPITI!\n";
+                            std::cout << "=============================================================\n";
+                            std::cout << " -> Supheli IP : " << s_ip << "\n";
+                            std::cout << " -> Durum      : DNS sorgusu icine gizlenmis anormal uzunlukta metin (" << anlamsiz_karakter_serisi << " karakter) tespit edildi!\n";
+                            std::cout << " -> Veri Ozeti : " << dns_string.substr(dns_string.length() - 40) << "...\n";
+                            std::cout << " -> Aksiyon    : Veri Sizdirma engellendi, IP KARA LİSTEYE alindi.\n";
+                            std::cout << "=============================================================\n";
+
+                            kara_liste.insert(s_ip);
+                            if (log_dosyasi.is_open()) log_dosyasi << "[ALARM - DNS TUNNEL] " << s_ip << " veri sizdirmasi tespit edildi! Kara listeye alindi.\n";
+                            break; // alarmı bir kere verip paketten çık
+                        }
+                    }
+                }
             }
         }
 
-        // tcp port taramas�
+        // nmap
         if (h_port != 0 && ip->proto == 6) {
             port_tarama_takibi[s_ip].insert(h_port);
             if (port_tarama_takibi[s_ip].size() == PORT_TARAMA_LIMITI) {
@@ -198,7 +218,7 @@ int main() {
     if (adhandle == NULL) return -1;
     pcap_freealldevs(alldevs);
 
-    std::cout << "\n[BPF] Uygulanacak filtreyi yazin [arp,tcp,udp,tcmp] (Hepsi icin bos birakin): ";
+    std::cout << "\n[BPF] Uygulanacak filtreyi yazin (Tumu icin bos birakin): ";
     std::cin.ignore();
     std::getline(std::cin, filtre_girdisi);
 
