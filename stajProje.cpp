@@ -4,6 +4,7 @@
 #include <set>
 #include <string>
 #include <fstream>
+#include <thread> 
 #pragma comment(lib, "ws2_32.lib")
 
 int toplam_paket = 0;
@@ -25,7 +26,7 @@ struct arp_header {
 };
 
 struct ip_header {
-    u_char ver_ihl; u_char tos; u_short tlen; // tlen: total length
+    u_char ver_ihl; u_char tos; u_short tlen;
     u_short id; u_short flags_fo;
     u_char ttl; u_char proto; u_short crc; u_char kaynak_ip[4]; u_char hedef_ip[4];
 };
@@ -48,11 +49,10 @@ std::map<std::string, int> syn_sayaci;
 
 const int PORT_TARAMA_LIMITI = 4;
 const int SYN_FLOOD_LIMITI = 5;
-const int ICMP_MAX_GIVEN_SIZE = 1000; // 1000 bayttan büyük ping gelirse alarm
+const int ICMP_MAX_GIVEN_SIZE = 1000;
 
 std::ofstream log_dosyasi("C:\\Users\\HUAWEI\\Desktop\\ids_guvenlik_log.txt", std::ios::app);
 
-// ips fonksiyonu
 void ip_engelle_ve_logla(const std::string& ip_adresi, const std::string& sebep) {
     if (kara_liste.find(ip_adresi) != kara_liste.end()) return;
 
@@ -62,13 +62,10 @@ void ip_engelle_ve_logla(const std::string& ip_adresi, const std::string& sebep)
         log_dosyasi << "[ALARM - " << sebep << "] " << ip_adresi << " tespit edildi. Kara listeye alindi.\n";
     }
 
-    //ips devrede
     std::string komut = "netsh advfirewall firewall add rule name=\"MiniIDS_Block_" + ip_adresi + "\" dir=in action=block remoteip=" + ip_adresi;
-
-    // C++ üzerinden işletim sistemi komutunu çalıştır
     system(komut.c_str());
 
-    std::cout << "[IPS AKTIF] " << ip_adresi << " Windows Guvenlik Duvari (Firewall) seviyesinde FIZIKSEL OLARAK ENGELLENDI!\n";
+    std::cout << "[IPS AKTİF] " << ip_adresi << " Windows Güvenlik Duvarı (Firewall) seviyesinde FİZİKSEL OLARAK ENGELLENDİ!\n";
 }
 
 std::string ip_to_string(const u_char* ip) {
@@ -85,7 +82,6 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
     const struct ethernet_header* eth = (struct ethernet_header*)pkt_data;
     u_short protokol = ntohs(eth->eth_type);
 
-    // arp
     if (protokol == 0x0806) {
         arp_sayisi++;
         const struct arp_header* arp = (struct arp_header*)(pkt_data + 14);
@@ -100,11 +96,10 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             if (bilinen_mac != gonderen_mac) {
                 alarm_sayisi++;
                 std::cout << "\nKRITIK ALARM: ARP SPOOFING! -> IP: " << gonderen_ip << "\n";
-                ip_engelle_ve_logla(gonderen_ip, "ARP SPOOFING"); 
+                ip_engelle_ve_logla(gonderen_ip, "ARP SPOOFING");
             }
         }
     }
-    // ipv4
     else if (protokol == 0x0800) {
         const struct ip_header* ip = (struct ip_header*)(pkt_data + 14);
         int ip_baslik_uzunlugu = (ip->ver_ihl & 0x0F) * 4;
@@ -115,36 +110,30 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
 
         if (kara_liste.find(s_ip) != kara_liste.end()) {
             kara_liste_engeli++;
-            std::cout << "[C++ ICI ENGEL] Kaynak: " << s_ip << " -> Hedef: " << h_ip << "\n";
             return;
         }
 
         u_short h_port = 0;
 
-        if (ip->proto == 6) { // tcp
+        if (ip->proto == 6) {
             tcp_sayisi++;
             const struct tcp_header* tcp = (struct tcp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
             h_port = ntohs(tcp->hedef_port);
 
-            // syn flood
             if (tcp->flags & 0x02) {
                 syn_sayaci[s_ip]++;
                 if (syn_sayaci[s_ip] == SYN_FLOOD_LIMITI) {
                     alarm_sayisi++; syn_flood_sayisi++;
-                    std::cout << "\n=============================================================\n";
-                    std::cout << " KRITIK ALARM: SYN FLOOD (DoS/DDoS) TESPITI!\n";
-                    std::cout << "=============================================================\n";
-                    std::cout << " -> Saldirgan IP : " << s_ip << "\n";
-                    ip_engelle_ve_logla(s_ip, "SYN FLOOD"); 
+                    std::cout << "\nKRITIK ALARM: SYN FLOOD (DoS) TESPITI! -> IP: " << s_ip << "\n";
+                    ip_engelle_ve_logla(s_ip, "SYN FLOOD");
                 }
             }
         }
-        else if (ip->proto == 17) { // udp
+        else if (ip->proto == 17) {
             udp_sayisi++;
             const struct udp_header* udp = (struct udp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
             h_port = ntohs(udp->hedef_port);
 
-            // dns tunneling
             if (h_port == 53) {
                 int udp_baslik_uzunlugu = 8;
                 int veri_baslangici = 14 + ip_baslik_uzunlugu + udp_baslik_uzunlugu;
@@ -168,44 +157,37 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
 
                         if (anlamsiz_karakter_serisi > 50) {
                             alarm_sayisi++;
-                            std::cout << "\n=============================================================\n";
-                            std::cout << " KRITIK ALARM: DNS TUNELLEME TESPITI!\n";
-                            std::cout << "=============================================================\n";
-                            std::cout << " -> Saldirgan IP : " << s_ip << "\n";
-                            ip_engelle_ve_logla(s_ip, "DNS TUNNELING"); 
+                            std::cout << "\nKRITIK ALARM: DNS TUNELLEME TESPITI! -> IP: " << s_ip << "\n";
+                            ip_engelle_ve_logla(s_ip, "DNS TUNNELING");
                             break;
                         }
                     }
                 }
             }
         }
-        else if (ip->proto == 1) { // icmp
+        else if (ip->proto == 1) {
             icmp_sayisi++;
-            const struct icmp_header* icmp = (struct icmp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
-
             if (toplam_ip_boyutu > ICMP_MAX_GIVEN_SIZE) {
                 alarm_sayisi++; ping_of_death_sayisi++;
-                std::cout << "\n=============================================================\n";
-                std::cout << " KRITIK ALARM: PING OF DEATH TESPITI!\n";
-                std::cout << "=============================================================\n";
-                std::cout << " -> Saldirgan IP : " << s_ip << "\n";
-                ip_engelle_ve_logla(s_ip, "PING OF DEATH"); 
+                std::cout << "\nKRITIK ALARM: PING OF DEATH TESPITI! -> IP: " << s_ip << "\n";
+                ip_engelle_ve_logla(s_ip, "PING OF DEATH");
             }
         }
 
-        // nmap
         if (h_port != 0 && ip->proto == 6) {
             port_tarama_takibi[s_ip].insert(h_port);
             if (port_tarama_takibi[s_ip].size() == PORT_TARAMA_LIMITI) {
                 alarm_sayisi++; port_tarama_sayisi++;
-                std::cout << "\n=============================================================\n";
-                std::cout << " KRITIK ALARM: NMAP TESPITI!\n";
-                std::cout << "=============================================================\n";
-                std::cout << " -> Saldirgan IP : " << s_ip << "\n";
-                ip_engelle_ve_logla(s_ip, "PORT SCAN"); 
+                std::cout << "\nKRITIK ALARM: PORT TARAMASI TESPITI! -> IP: " << s_ip << "\n";
+                ip_engelle_ve_logla(s_ip, "PORT SCAN");
             }
         }
     }
+}
+
+void ag_dinleme_thread(pcap_t* adhandle, int paket_limiti) {
+    std::cout << "\n[THREAD] Ag dinleme arka plan is parcacigi (Background Thread) baslatildi.\n";
+    pcap_loop(adhandle, paket_limiti, packet_handler, NULL);
 }
 
 int main() {
@@ -226,7 +208,7 @@ int main() {
     if (adhandle == NULL) return -1;
     pcap_freealldevs(alldevs);
 
-    std::cout << "\n[BPF] Uygulanacak filtreyi yazin (Tumu icin bos birakin): ";
+    std::cout << "\n[BPF] Uygulanacak filtreyi yazin (Hepsi icin bos birakin): ";
     std::cin.ignore();
     std::getline(std::cin, filtre_girdisi);
 
@@ -234,15 +216,21 @@ int main() {
         struct bpf_program fcode;
         if (pcap_compile(adhandle, &fcode, filtre_girdisi.c_str(), 1, PCAP_NETMASK_UNKNOWN) >= 0) {
             pcap_setfilter(adhandle, &fcode);
-            std::cout << "BPF Filtresi Aktif: " << filtre_girdisi << "\n";
+            std::cout << "[+] BPF Filtresi Aktif: " << filtre_girdisi << "\n";
         }
     }
 
     std::cout << "Kac paket yakalandiktan sonra oturum sonlansin?: ";
     std::cin >> paket_limiti;
 
-    std::cout << "\nAg dinleniyor... (Ping of Death, SYN Flood, Port Tarama Korumasi Aktif)\n";
-    pcap_loop(adhandle, paket_limiti, packet_handler, NULL);
+    std::cout << "\n[SISTEM] Multi-threading (Coklu Is Parcacigi) mimarisi devreye aliniyor...\n";
+
+    std::thread dinleme_thread(ag_dinleme_thread, adhandle, paket_limiti);
+
+    std::cout << "[MAIN] Ana is parcacigi bosta, arka planda ag guvenle izleniyor...\n";
+
+    dinleme_thread.join();
+
     pcap_close(adhandle);
     if (log_dosyasi.is_open()) log_dosyasi.close();
 
