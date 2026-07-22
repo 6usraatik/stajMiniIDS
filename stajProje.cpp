@@ -4,7 +4,8 @@
 #include <set>
 #include <string>
 #include <fstream>
-#include <thread> 
+#include <thread>
+#include <mutex> 
 #pragma comment(lib, "ws2_32.lib")
 
 int toplam_paket = 0;
@@ -17,6 +18,8 @@ int port_tarama_sayisi = 0;
 int syn_flood_sayisi = 0;
 int ping_of_death_sayisi = 0;
 int kara_liste_engeli = 0;
+
+std::mutex mtx;
 
 struct ethernet_header { u_char hedef_mac[6]; u_char kaynak_mac[6]; u_short eth_type; };
 
@@ -54,6 +57,8 @@ const int ICMP_MAX_GIVEN_SIZE = 1000;
 std::ofstream log_dosyasi("C:\\Users\\HUAWEI\\Desktop\\ids_guvenlik_log.txt", std::ios::app);
 
 void ip_engelle_ve_logla(const std::string& ip_adresi, const std::string& sebep) {
+    std::lock_guard<std::mutex> lock(mtx);
+
     if (kara_liste.find(ip_adresi) != kara_liste.end()) return;
 
     kara_liste.insert(ip_adresi);
@@ -65,7 +70,7 @@ void ip_engelle_ve_logla(const std::string& ip_adresi, const std::string& sebep)
     std::string komut = "netsh advfirewall firewall add rule name=\"MiniIDS_Block_" + ip_adresi + "\" dir=in action=block remoteip=" + ip_adresi;
     system(komut.c_str());
 
-    std::cout << "[IPS AKTIF] " << ip_adresi << " Windows Guvenlik Duvari (Firewall) seviyesinde FIZIKSEL OLARAK ENGELLENDI!\n";
+    std::cout << "[IPS AKTIF] " << ip_adresi << " Windows Guvenlik Duvari seviyesinde FIZIKSEL OLARAK ENGELLENDI!\n";
 }
 
 std::string ip_to_string(const u_char* ip) {
@@ -78,16 +83,24 @@ std::string mac_to_string(const u_char* mac) {
 }
 
 void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_char* pkt_data) {
-    toplam_paket++;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        toplam_paket++;
+    }
+
     const struct ethernet_header* eth = (struct ethernet_header*)pkt_data;
     u_short protokol = ntohs(eth->eth_type);
 
     if (protokol == 0x0806) {
-        arp_sayisi++;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            arp_sayisi++;
+        }
         const struct arp_header* arp = (struct arp_header*)(pkt_data + 14);
         std::string gonderen_ip = ip_to_string(arp->gonderen_ip);
         std::string gonderen_mac = mac_to_string(arp->gonderen_mac);
 
+        std::lock_guard<std::mutex> lock(mtx);
         if (ip_mac_tablosu.find(gonderen_ip) == ip_mac_tablosu.end()) {
             ip_mac_tablosu[gonderen_ip] = gonderen_mac;
         }
@@ -96,7 +109,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             if (bilinen_mac != gonderen_mac) {
                 alarm_sayisi++;
                 std::cout << "\nKRITIK ALARM: ARP SPOOFING! -> IP: " << gonderen_ip << "\n";
+                mtx.unlock();
                 ip_engelle_ve_logla(gonderen_ip, "ARP SPOOFING");
+                mtx.lock();
             }
         }
     }
@@ -108,19 +123,26 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
         std::string s_ip = ip_to_string(ip->kaynak_ip);
         std::string h_ip = ip_to_string(ip->hedef_ip);
 
-        if (kara_liste.find(s_ip) != kara_liste.end()) {
-            kara_liste_engeli++;
-            return;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (kara_liste.find(s_ip) != kara_liste.end()) {
+                kara_liste_engeli++;
+                return;
+            }
         }
 
         u_short h_port = 0;
 
         if (ip->proto == 6) {
-            tcp_sayisi++;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                tcp_sayisi++;
+            }
             const struct tcp_header* tcp = (struct tcp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
             h_port = ntohs(tcp->hedef_port);
 
             if (tcp->flags & 0x02) {
+                std::lock_guard<std::mutex> lock(mtx);
                 syn_sayaci[s_ip]++;
                 if (syn_sayaci[s_ip] == SYN_FLOOD_LIMITI) {
                     alarm_sayisi++; syn_flood_sayisi++;
@@ -128,12 +150,17 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
                     std::cout << " KRITIK ALARM: SYN FLOOD (DoS/DDoS) TESPITI!\n";
                     std::cout << "=============================================================\n";
                     std::cout << " -> Saldirgan IP : " << s_ip << "\n";
+                    mtx.unlock();
                     ip_engelle_ve_logla(s_ip, "SYN FLOOD");
+                    mtx.lock();
                 }
             }
         }
         else if (ip->proto == 17) {
-            udp_sayisi++;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                udp_sayisi++;
+            }
             const struct udp_header* udp = (struct udp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
             h_port = ntohs(udp->hedef_port);
 
@@ -159,12 +186,15 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
                         }
 
                         if (anlamsiz_karakter_serisi > 50) {
+                            std::lock_guard<std::mutex> lock(mtx);
                             alarm_sayisi++;
                             std::cout << "\n=============================================================\n";
                             std::cout << " KRITIK ALARM: DNS TUNELLEME TESPITI!\n";
                             std::cout << "=============================================================\n";
                             std::cout << " -> Saldirgan IP : " << s_ip << "\n";
+                            mtx.unlock();
                             ip_engelle_ve_logla(s_ip, "DNS TUNNELING");
+                            mtx.lock();
                             break;
                         }
                     }
@@ -172,18 +202,25 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             }
         }
         else if (ip->proto == 1) {
-            icmp_sayisi++;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                icmp_sayisi++;
+            }
             if (toplam_ip_boyutu > ICMP_MAX_GIVEN_SIZE) {
+                std::lock_guard<std::mutex> lock(mtx);
                 alarm_sayisi++; ping_of_death_sayisi++;
                 std::cout << "\n=============================================================\n";
                 std::cout << " KRITIK ALARM: PING OF DEATH TESPITI!\n";
                 std::cout << "=============================================================\n";
                 std::cout << " -> Saldirgan IP : " << s_ip << "\n";
+                mtx.unlock();
                 ip_engelle_ve_logla(s_ip, "PING OF DEATH");
+                mtx.lock();
             }
         }
 
         if (h_port != 0 && ip->proto == 6) {
+            std::lock_guard<std::mutex> lock(mtx);
             port_tarama_takibi[s_ip].insert(h_port);
             if (port_tarama_takibi[s_ip].size() == PORT_TARAMA_LIMITI) {
                 alarm_sayisi++; port_tarama_sayisi++;
@@ -191,14 +228,16 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
                 std::cout << " KRITIK ALARM: NMAP TESPITI!\n";
                 std::cout << "=============================================================\n";
                 std::cout << " -> Saldirgan IP : " << s_ip << "\n";
+                mtx.unlock();
                 ip_engelle_ve_logla(s_ip, "PORT SCAN");
+                mtx.lock();
             }
         }
     }
 }
 
 void ag_dinleme_thread(pcap_t* adhandle, int paket_limiti) {
-    std::cout << "\n[THREAD] Ag dinleme arka plan is parcacigi (Background Thread) baslatildi.\n";
+    std::cout << "\n[THREAD] Ag dinleme arka plan thread baslatildi.\n";
     pcap_loop(adhandle, paket_limiti, packet_handler, NULL);
 }
 
@@ -235,11 +274,11 @@ int main() {
     std::cout << "Kac paket yakalandiktan sonra oturum sonlansin?: ";
     std::cin >> paket_limiti;
 
-    std::cout << "\n[SISTEM] Multi-threading (Coklu Is Parcacigi) mimarisi devreye aliniyor...\n";
+    std::cout << "\n[SISTEM] Thread-safe kilit mekanizmalari devreye aliniyor...\n";
 
     std::thread dinleme_thread(ag_dinleme_thread, adhandle, paket_limiti);
 
-    std::cout << "[MAIN] Ana is parcacigi bosta, arka planda ag guvenle izleniyor...\n";
+    std::cout << "[MAIN] Ana thread bosta, arka planda ag guvenle izleniyor...\n";
 
     dinleme_thread.join();
 
