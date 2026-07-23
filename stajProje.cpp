@@ -5,7 +5,8 @@
 #include <string>
 #include <fstream>
 #include <thread>
-#include <mutex> 
+#include <mutex>
+#include <memory>
 #pragma comment(lib, "ws2_32.lib")
 
 int toplam_paket = 0;
@@ -88,7 +89,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
         toplam_paket++;
     }
 
-    const struct ethernet_header* eth = (struct ethernet_header*)pkt_data;
+    std::unique_ptr<ethernet_header> eth(new ethernet_header);
+    std::memcpy(eth.get(), pkt_data, sizeof(ethernet_header));
+
     u_short protokol = ntohs(eth->eth_type);
 
     if (protokol == 0x0806) {
@@ -96,7 +99,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             std::lock_guard<std::mutex> lock(mtx);
             arp_sayisi++;
         }
-        const struct arp_header* arp = (struct arp_header*)(pkt_data + 14);
+        std::unique_ptr<arp_header> arp(new arp_header);
+        std::memcpy(arp.get(), pkt_data + 14, sizeof(arp_header));
+
         std::string gonderen_ip = ip_to_string(arp->gonderen_ip);
         std::string gonderen_mac = mac_to_string(arp->gonderen_mac);
 
@@ -116,7 +121,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
         }
     }
     else if (protokol == 0x0800) {
-        const struct ip_header* ip = (struct ip_header*)(pkt_data + 14);
+        std::unique_ptr<ip_header> ip(new ip_header);
+        std::memcpy(ip.get(), pkt_data + 14, sizeof(ip_header));
+
         int ip_baslik_uzunlugu = (ip->ver_ihl & 0x0F) * 4;
         u_short toplam_ip_boyutu = ntohs(ip->tlen);
 
@@ -138,7 +145,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
                 std::lock_guard<std::mutex> lock(mtx);
                 tcp_sayisi++;
             }
-            const struct tcp_header* tcp = (struct tcp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
+            std::unique_ptr<tcp_header> tcp(new tcp_header);
+            std::memcpy(tcp.get(), pkt_data + 14 + ip_baslik_uzunlugu, sizeof(tcp_header));
+
             h_port = ntohs(tcp->hedef_port);
 
             if (tcp->flags & 0x02) {
@@ -161,7 +170,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
                 std::lock_guard<std::mutex> lock(mtx);
                 udp_sayisi++;
             }
-            const struct udp_header* udp = (struct udp_header*)(pkt_data + 14 + ip_baslik_uzunlugu);
+            std::unique_ptr<udp_header> udp(new udp_header);
+            std::memcpy(udp.get(), pkt_data + 14 + ip_baslik_uzunlugu, sizeof(udp_header));
+
             h_port = ntohs(udp->hedef_port);
 
             if (h_port == 53) {
@@ -236,9 +247,9 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
     }
 }
 
-void ag_dinleme_thread(pcap_t* adhandle, int paket_limiti) {
-    std::cout << "\n[THREAD] Ag dinleme arka plan thread baslatildi.\n";
-    pcap_loop(adhandle, paket_limiti, packet_handler, NULL);
+void packet_listener_thread(pcap_t* adhandle, int packet_limit) {
+    std::cout << "\n[THREAD] Ag dinleme arka plan is parcacigi baslatildi.\n";
+    pcap_loop(adhandle, packet_limit, packet_handler, NULL);
 }
 
 int main() {
@@ -274,13 +285,13 @@ int main() {
     std::cout << "Kac paket yakalandiktan sonra oturum sonlansin?: ";
     std::cin >> paket_limiti;
 
-    std::cout << "\n[SISTEM] Thread-safe kilit mekanizmalari devreye aliniyor...\n";
+    std::cout << "\n[SISTEM] Modern bellek yonetimi (Smart Pointers & RAII) devreye aliniyor...\n";
 
-    std::thread dinleme_thread(ag_dinleme_thread, adhandle, paket_limiti);
+    std::thread listener_thread(packet_listener_thread, adhandle, paket_limiti);
 
-    std::cout << "[MAIN] Ana thread bosta, arka planda ag guvenle izleniyor...\n";
+    std::cout << "[MAIN] Ana is parcacigi bosta, arka planda ag guvenle izleniyor...\n";
 
-    dinleme_thread.join();
+    listener_thread.join();
 
     pcap_close(adhandle);
     if (log_dosyasi.is_open()) log_dosyasi.close();
@@ -289,6 +300,7 @@ int main() {
     std::cout << " Toplam Incelenen Paket  : " << toplam_paket << "\n";
     std::cout << " Analiz Edilen TCP/UDP   : " << tcp_sayisi << " / " << udp_sayisi << "\n";
     std::cout << " Analiz Edilen ICMP      : " << icmp_sayisi << "\n";
+    std::cout << " Analiz Edilen ARP       : " << arp_sayisi << "\n";
     std::cout << " Tespit Edilen Port Scan : " << port_tarama_sayisi << "\n";
     std::cout << " Tespit Edilen SYN Flood : " << syn_flood_sayisi << "\n";
     std::cout << " Yakalanan Ping of Death : " << ping_of_death_sayisi << "\n";
