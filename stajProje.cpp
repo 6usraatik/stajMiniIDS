@@ -7,9 +7,12 @@
 #include <thread>
 #include <mutex>
 #include <memory>
+#include <chrono>
+
 #pragma comment(lib, "ws2_32.lib")
 
 int toplam_paket = 0;
+long toplam_bayt = 0; 
 int tcp_sayisi = 0;
 int udp_sayisi = 0;
 int icmp_sayisi = 0;
@@ -21,6 +24,7 @@ int ping_of_death_sayisi = 0;
 int kara_liste_engeli = 0;
 
 std::mutex mtx;
+auto baslangic_zamani = std::chrono::steady_clock::now(); 
 
 struct ethernet_header { u_char hedef_mac[6]; u_char kaynak_mac[6]; u_short eth_type; };
 
@@ -59,18 +63,13 @@ std::ofstream log_dosyasi("C:\\Users\\HUAWEI\\Desktop\\ids_guvenlik_log.txt", st
 
 void ip_engelle_ve_logla(const std::string& ip_adresi, const std::string& sebep) {
     std::lock_guard<std::mutex> lock(mtx);
-
     if (kara_liste.find(ip_adresi) != kara_liste.end()) return;
-
     kara_liste.insert(ip_adresi);
-
     if (log_dosyasi.is_open()) {
         log_dosyasi << "[ALARM - " << sebep << "] " << ip_adresi << " tespit edildi. Kara listeye alindi.\n";
     }
-
     std::string komut = "netsh advfirewall firewall add rule name=\"MiniIDS_Block_" + ip_adresi + "\" dir=in action=block remoteip=" + ip_adresi;
     system(komut.c_str());
-
     std::cout << "[IPS AKTIF] " << ip_adresi << " Windows Guvenlik Duvari seviyesinde FIZIKSEL OLARAK ENGELLENDI!\n";
 }
 
@@ -87,6 +86,7 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
     {
         std::lock_guard<std::mutex> lock(mtx);
         toplam_paket++;
+        toplam_bayt += header->len; 
     }
 
     std::unique_ptr<ethernet_header> eth(new ethernet_header);
@@ -113,7 +113,10 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             std::string bilinen_mac = ip_mac_tablosu[gonderen_ip];
             if (bilinen_mac != gonderen_mac) {
                 alarm_sayisi++;
-                std::cout << "\nKRITIK ALARM: ARP SPOOFING! -> IP: " << gonderen_ip << "\n";
+                std::cout << "\n=============================================================\n";
+                std::cout << " KRITIK ALARM: ARP SPOOFING TESPITI!\n";
+                std::cout << "=============================================================\n";
+                std::cout << " -> Saldirgan IP : " << gonderen_ip << "\n";
                 mtx.unlock();
                 ip_engelle_ve_logla(gonderen_ip, "ARP SPOOFING");
                 mtx.lock();
@@ -128,7 +131,6 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
         u_short toplam_ip_boyutu = ntohs(ip->tlen);
 
         std::string s_ip = ip_to_string(ip->kaynak_ip);
-        std::string h_ip = ip_to_string(ip->hedef_ip);
 
         {
             std::lock_guard<std::mutex> lock(mtx);
@@ -176,25 +178,16 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
             h_port = ntohs(udp->hedef_port);
 
             if (h_port == 53) {
-                int udp_baslik_uzunlugu = 8;
-                int veri_baslangici = 14 + ip_baslik_uzunlugu + udp_baslik_uzunlugu;
-                int veri_uzunlugu = toplam_ip_boyutu - ip_baslik_uzunlugu - udp_baslik_uzunlugu;
+                int veri_baslangici = 14 + ip_baslik_uzunlugu + 8;
+                int veri_uzunlugu = toplam_ip_boyutu - ip_baslik_uzunlugu - 8;
 
                 if (veri_uzunlugu > 0) {
                     const u_char* dns_verisi = pkt_data + veri_baslangici;
-                    std::string dns_string = "";
                     int anlamsiz_karakter_serisi = 0;
-
                     for (int j = 0; j < veri_uzunlugu; j++) {
                         unsigned char c = (unsigned char)dns_verisi[j];
-
-                        if (std::isalnum(c) || c == '-' || c == '.') {
-                            dns_string += c;
-                            anlamsiz_karakter_serisi++;
-                        }
-                        else {
-                            anlamsiz_karakter_serisi = 0;
-                        }
+                        if (std::isalnum(c) || c == '-' || c == '.') anlamsiz_karakter_serisi++;
+                        else anlamsiz_karakter_serisi = 0;
 
                         if (anlamsiz_karakter_serisi > 50) {
                             std::lock_guard<std::mutex> lock(mtx);
@@ -263,41 +256,70 @@ int main() {
     if (i == 0) return 0;
 
     std::cout << "\nDinlenecek adaptor numarasi: ";
-    std::cin >> secim;
+
+    std::string girdi;
+    while (true) {
+        std::getline(std::cin, girdi);
+
+        if (girdi.empty()) {
+            std::cout << "Girdi bos birakilamaz! Lutfen 1 ile " << i << " arasinda bir numara girin: ";
+            continue;
+        }
+
+        try {
+            secim = std::stoi(girdi);
+
+            if (secim >= 1 && secim <= i) {
+                break;
+            }
+            else {
+                std::cout << "Gecersiz numara! Lutfen 1 ile " << i << " arasinda bir deger girin: ";
+            }
+        }
+        catch (...) {
+            std::cout << "Gecersiz karakter! Lutfen sadece sayi girin: ";
+        }
+    }
+
     for (d = alldevs, i = 0; i < secim - 1; d = d->next, i++);
 
     pcap_t* adhandle = pcap_open_live(d->name, 65536, 1, 1000, errbuf);
     if (adhandle == NULL) return -1;
     pcap_freealldevs(alldevs);
 
-    std::cout << "\n[BPF] Uygulanacak filtreyi yazin (Hepsi icin bos birakin): ";
-    std::cin.ignore();
-    std::getline(std::cin, filtre_girdisi);
+    std::cout << "\nKac paket yakalansin?: ";
 
-    if (!filtre_girdisi.empty()) {
-        struct bpf_program fcode;
-        if (pcap_compile(adhandle, &fcode, filtre_girdisi.c_str(), 1, PCAP_NETMASK_UNKNOWN) >= 0) {
-            pcap_setfilter(adhandle, &fcode);
-            std::cout << "[+] BPF Filtresi Aktif: " << filtre_girdisi << "\n";
+    while (true) {
+        std::getline(std::cin, girdi);
+        if (girdi.empty()) {
+            std::cout << "Limit bos birakilamaz! Lutfen pozitif bir sayi girin: ";
+            continue;
+        }
+        try {
+            paket_limiti = std::stoi(girdi);
+            if (paket_limiti > 0) break;
+            else std::cout << "Lutfen 0'dan buyuk bir sayi girin: ";
+        }
+        catch (...) {
+            std::cout << "Gecersiz karakter! Lutfen sadece sayi girin: ";
         }
     }
 
-    std::cout << "Kac paket yakalandiktan sonra oturum sonlansin?: ";
-    std::cin >> paket_limiti;
-
-    std::cout << "\n[SISTEM] Modern bellek yonetimi (Smart Pointers & RAII) devreye aliniyor...\n";
-
+    std::cout << "\n[SISTEM] Analiz modulu baslatiliyor...\n";
     std::thread listener_thread(packet_listener_thread, adhandle, paket_limiti);
-
-    std::cout << "[MAIN] Ana is parcacigi bosta, arka planda ag guvenle izleniyor...\n";
-
     listener_thread.join();
 
     pcap_close(adhandle);
     if (log_dosyasi.is_open()) log_dosyasi.close();
 
+    auto bitis_zamani = std::chrono::steady_clock::now();
+    std::chrono::duration<double> sure = bitis_zamani - baslangic_zamani;
+
     std::cout << "\n================ OTURUM OZETI ================\n";
     std::cout << " Toplam Incelenen Paket  : " << toplam_paket << "\n";
+    std::cout << " Toplam Veri Hacmi       : " << (toplam_bayt / 1024.0) << " KB\n";
+    std::cout << " Gecen Sure              : " << sure.count() << " saniye\n";
+    std::cout << " Ortalama Hiz            : " << (toplam_paket / sure.count()) << " paket/sn\n";
     std::cout << " Analiz Edilen TCP/UDP   : " << tcp_sayisi << " / " << udp_sayisi << "\n";
     std::cout << " Analiz Edilen ICMP      : " << icmp_sayisi << "\n";
     std::cout << " Analiz Edilen ARP       : " << arp_sayisi << "\n";
@@ -307,10 +329,6 @@ int main() {
     std::cout << " Toplam Guvenlik Alarmi  : " << alarm_sayisi << "\n";
     std::cout << " Kara Listeden Engellenen: " << kara_liste_engeli << " paket\n";
     std::cout << "==============================================\n";
-
-    std::cout << "Cikmak icin bir tusa basin...";
-    std::cin.ignore();
-    std::cin.get();
 
     return 0;
 }
